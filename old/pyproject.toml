@@ -7,7 +7,7 @@ name = "sia-claude"
 version = "0.1.0"
 description = "Work Unit Coordination for Claude Code multi-agent workflows"
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
 requires-python = ">=3.10"
 authors = [
     {name = "Sia Team"}
@@ -16,7 +16,6 @@ keywords = ["claude", "ai", "agents", "coordination", "multi-agent"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",

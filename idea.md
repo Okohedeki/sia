@@ -1,134 +1,220 @@
-# claude.md — Seamless Claude Code Integration (Hooks + Subagents)
+# Idea: A Runtime & Control Plane for Multi-Agent AI Execution
 
-This project is a **Docker-like runtime/control plane for AI agents**. For Claude Code, we integrate via **Hooks** to enforce deterministic coordination over files and processes, while keeping Claude’s `/agent` + subagent workflows intact.
+## High-Level Concept
 
----
+This project provides **Docker-like runtime semantics for AI agents** by running agents through the **Agent SDK** and enforcing coordination at the tool boundary.
 
-## Goal
+Instead of isolating OS processes, the system isolates **agent work units**
+(files, directories, and processes) and schedules agent execution deterministically.
 
-Make Claude Code multi-agent workflows:
-- **Deterministic** (no hidden parallel collisions)
-- **Observable** (see what’s running, blocked, queued)
-- **Isolated** (agents act on declared work units)
-- **Compatible** (works with `/agent`, custom agents, and subagents)
-
-We do this by intercepting tool use and routing it through a local daemon.
+Agents do not directly touch the filesystem or processes.
+All actions pass through a controlled runtime.
 
 ---
 
-## How Claude Code Fits In
+## Why This Exists
 
-Claude Code provides:
-- `/agent` to select different agent profiles
-- Subagents for parallel/focused work
-- Tool calls (read/write/edit/bash) as the execution boundary
-- Hook events we can intercept
+Multi-agent AI workflows break down at execution time.
 
-**We do NOT replace Claude Code**. We become the **runtime governor**:
-- Locks, queues, scheduling
-- Event streaming for UI
-- Replay artifacts (diffs + logs)
+Current agent frameworks focus on:
+- planning
+- messaging
+- reasoning
+
+They do **not** control:
+- concurrent file modification
+- overlapping builds or tests
+- execution order
+- runtime visibility
+
+This project treats agents as **concurrent workers touching shared state**
+and applies proven systems principles:
+locks, schedulers, lifecycles, and observability.
 
 ---
 
-## Integration Architecture
+## Core Principles
+
+- Execution is explicit
+- Resources are first-class
+- Parallelism is controlled
+- State is observable
+- Runs are reproducible
+
+Autonomy without coordination is liability.
+
+---
+
+## Architecture Overview
 
 ### Components
-1. **Claude Code hooks** (project-scoped)
-2. **lockd** (local daemon on localhost)
-   - lock manager + scheduler
-   - event log
-   - websocket/SSE stream for UI
-3. **UI** (web app)
-   - agents, locks, queues, plans, diffs, replay
 
-### Runtime Model
-- Files/dirs/processes are **Work Units**
-- Edits/writes require **exclusive locks**
-- Conflicts are **queued**, not merged ad-hoc
-- Everything emits **events** for live visibility
+1. **Agent Runner (Agent SDK)**
+   - Executes agents and subagents
+   - Owns the agent loop
+   - Routes all actions through tools
 
----
+2. **Tool Host (Syscall Layer)**
+   - File tools: read, patch, write
+   - Process tools: run commands
+   - Artifact tools: diffs, logs, outputs
 
-## Hook Events We Use
+3. **Lock & Scheduler Service**
+   - Manages exclusive resource ownership
+   - Queues conflicting requests
+   - Enforces TTLs and lifecycle transitions
 
-### Required (v1)
-- **PreToolUse**: enforce locks + queueing before tools run
-- **PostToolUse**: capture diffs + emit telemetry after tools run
-
-### Nice-to-have (v2)
-- **UserPromptSubmit**: inject workflow rules (declare work units, plan format)
-- **SubagentStop**: treat subagent completion as first-class events
+4. **Control Plane UI**
+   - Live view of agents, locks, queues
+   - Plan graphs and diffs
+   - Replay and debugging
 
 ---
 
-## What We Intercept
+## Core Runtime Concepts
 
-### File tools
-- `Read` → optional (telemetry), usually allowed
-- `Edit` / `Write` → must acquire lock on target file
-- (Optional) directory-level locks via policy (e.g., lock a folder as a unit)
+### Agent Work Units
+Files, directories, and named processes are modeled as **work units**.
 
-### Process tools
-- `Bash` → classify command into a process resource:
-  - `proc:test`, `proc:build`, `proc:migrate`, `proc:deploy`
-- Acquire lock before execution (prevents overlapping runs)
+Agents must explicitly claim work units before acting on them.
 
 ---
 
-## Lock + Queue Semantics
+### Exclusive Resource Locks
+Only one agent may modify a work unit at a time.
 
-### File Locks
-- Write lock is **exclusive**
-- When denied:
-  - caller is placed in a **queue**
-  - hook returns deny message with queue position + current holder
-- Locks are **time-bound (TTL)** to prevent deadlocks
-
-### Process Locks
-- Named resources (e.g., `proc:test`)
-- Single-flight execution for shared environments
+- Write access is exclusive
+- Conflicts are queued
+- Locks expire automatically (TTL)
 
 ---
 
-## “Docker-like” Features Implemented via Hooks
+### Deterministic Scheduling
+Agent execution is coordinated by a scheduler.
 
-1. **Work Units**: agents must declare targets (files/dirs/processes)
-2. **Exclusive Locks**: one agent modifies a file at a time
-3. **Deterministic Scheduling**: queued requests unblock in order
-4. **Live Visibility**: every tool call becomes an event
-5. **Plans as Execution Graphs**: plan IDs tie steps → locks → diffs
-6. **Diff Artifacts**: every edit/write produces a stored diff
-7. **Agent Isolation**: coordination via locks + artifacts, not shared state
-8. **Process Coordination**: commands acquire process locks
-9. **Lifecycle Control**: pause/terminate by denying further tool use
-10. **Replayable Runs**: diffs + command outputs logged per step
+- Agents block when resources are unavailable
+- Execution order is explicit
+- No hidden parallelism
 
 ---
 
-## Minimal Project Setup (V1)
+### Agent Isolation
+Agents do not share mutable state.
 
-### 1) Project hooks config
-Create `.claude/settings.json` in the repo:
+- No shared scratchpads
+- Communication via declared artifacts only
+- Failures are contained
 
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Read|Edit|Write|Bash",
-        "hooks": [
-          { "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/pre_tool_guard.py" }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Edit|Write|Bash",
-        "hooks": [
-          { "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/post_tool_telemetry.py" }
-        ]
-      }
-    ]
-  }
-}
+---
+
+### Process-Level Coordination
+Non-file resources are schedulable.
+
+Examples:
+- build
+- test
+- deploy
+- migrate
+
+Only one agent may own a process resource at a time.
+
+---
+
+## Execution Model
+
+1. Agent receives a task
+2. Agent submits an execution plan (optional but recommended)
+3. Agent claims required work units
+4. Scheduler grants or queues claims
+5. Agent executes tool calls
+6. Artifacts are produced (diffs, logs)
+7. Locks are released or expire
+8. Run state is recorded for replay
+
+---
+
+## Docker-Like Features for Agents
+
+### 1. Work Units
+Declared resources required for execution.
+
+### 2. Locks
+Exclusive ownership of mutable resources.
+
+### 3. Scheduler
+Central coordination of concurrent execution.
+
+### 4. Live State
+Real-time visibility into running, blocked, and waiting agents.
+
+### 5. Execution Plans
+Structured plans tied directly to resource usage.
+
+### 6. Change Artifacts
+Diff-first output instead of silent edits.
+
+### 7. Isolation
+No shared mutable agent state.
+
+### 8. Process Resources
+Build/test/deploy treated as lockable units.
+
+### 9. Lifecycle Control
+Start, pause, resume, terminate agent runs.
+
+### 10. Replayable Runs
+Rewind and replay execution deterministically.
+
+---
+
+## Control Plane UI
+
+The UI acts as the operator console.
+
+It shows:
+- agents and subagents
+- current work unit ownership
+- lock queues
+- execution plans
+- diffs and command output
+- run timelines and replay controls
+
+This is not a chat UI.
+It is an execution console.
+
+---
+
+## What This Is Not
+
+- Not a prompt framework
+- Not a chat interface
+- Not an agent intelligence layer
+- Not a policy engine
+
+This system governs **how agents execute**, not how they reason.
+
+---
+
+## Target Use Cases
+
+- Multi-agent coding and refactoring
+- Autonomous research pipelines
+- AI-assisted CI workflows
+- Local or CI-based agent execution
+- Teams running multiple agents concurrently
+
+Anywhere agents touch real files or processes.
+
+---
+
+## Success Criteria
+
+This project succeeds if:
+
+- Agents behave predictably
+- Conflicts are prevented by design
+- Execution is observable in real time
+- Failures are debuggable
+- Runs are reproducible
+
+Agents should feel like **scheduled workers**, not background chaos.
