@@ -6,6 +6,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pathlib import Path
 
+from typing import Any, Optional
 from .models import (
     RegisterAgentRequest,
     UpdateStateRequest,
@@ -19,8 +20,24 @@ from .models import (
     PlanStepResponse,
     StepLogResponse,
     WorkUnitResponse,
+    AgentSource,
 )
 from .registry import registry
+from pydantic import BaseModel
+
+
+class HookPayload(BaseModel):
+    """Payload from Claude Code hooks."""
+    hook_type: str = "unknown"
+    tool_name: str = ""
+    tool_input: dict[str, Any] = {}
+    tool_output: str = ""
+    session_id: str = ""
+    working_directory: str = ""
+
+
+# Track session_id -> agent_id mapping
+_session_agents: dict[str, str] = {}
 
 # Locate static files directory (bundled frontend)
 STATIC_DIR = Path(__file__).parent / "static"
@@ -167,6 +184,74 @@ async def get_agent_work_units(agent_id: str):
     """Get work units for a specific agent."""
     work_units = registry.get_agent_work_units(agent_id)
     return [WorkUnitResponse(**wu.model_dump()) for wu in work_units]
+
+
+# Hooks API - receives automatic reports from Claude Code hooks
+
+@app.post("/api/hooks/tool-use")
+async def hook_tool_use(payload: HookPayload):
+    """Handle tool use reports from Claude Code hooks."""
+    session_id = payload.session_id or "default"
+
+    # Get or create agent for this session
+    if session_id not in _session_agents:
+        # Auto-register agent for this session
+        task = f"Session in {payload.working_directory.split('/')[-1] or payload.working_directory.split(chr(92))[-1] or 'unknown'}"
+        agent = registry.register(
+            task=task,
+            name=f"claude-{session_id[:8]}" if session_id != "default" else "claude-session",
+            model="claude-code",
+            source="mcp",
+        )
+        _session_agents[session_id] = agent.id
+        registry.update_state(agent.id, "running")
+
+    agent_id = _session_agents[session_id]
+
+    # Handle TodoWrite specially - extract plan
+    if payload.tool_name == "TodoWrite":
+        todos = payload.tool_input.get("todos", [])
+        if todos:
+            steps = [t.get("content", "") for t in todos if t.get("content")]
+            if steps:
+                registry.set_plan(agent_id, steps)
+                # Update step statuses based on todo statuses
+                for i, todo in enumerate(todos, 1):
+                    status = todo.get("status", "pending")
+                    if status == "in_progress":
+                        registry.update_step(agent_id, i, "in_progress")
+                    elif status == "completed":
+                        registry.update_step(agent_id, i, "completed")
+
+    # Track file operations as work units
+    file_path = None
+    operation = "unknown"
+
+    if payload.tool_name in ("Read", "read_file", "sia_read_file"):
+        file_path = payload.tool_input.get("file_path") or payload.tool_input.get("path")
+        operation = "read"
+    elif payload.tool_name in ("Write", "write_file", "sia_write_file"):
+        file_path = payload.tool_input.get("file_path") or payload.tool_input.get("path")
+        operation = "write"
+    elif payload.tool_name in ("Edit", "edit_file"):
+        file_path = payload.tool_input.get("file_path")
+        operation = "write"
+    elif payload.tool_name in ("Bash", "bash", "sia_run_command"):
+        operation = "execute"
+
+    if file_path:
+        registry.track_file_access(agent_id, file_path, operation)
+
+    # Record the tool call
+    registry.add_tool_call(
+        agent_id=agent_id,
+        tool_name=payload.tool_name,
+        tool_input=payload.tool_input,
+        tool_output=payload.tool_output[:1000] if payload.tool_output else "",  # Truncate long outputs
+        duration_ms=0,  # Hooks don't have timing info
+    )
+
+    return {"status": "ok", "agent_id": agent_id}
 
 
 # UI API - used by the frontend to observe agents
