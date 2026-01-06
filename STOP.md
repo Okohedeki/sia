@@ -1,51 +1,16 @@
-# Sia - Session Stop Point
+# Sia - Current State
 
-**Date:** January 5, 2026
+**Date:** January 2026
 
 ---
 
-## What Was Accomplished Today
+## What We Have
 
-### 1. MCP Server Integration - COMPLETE
-
-Sia now works as a native MCP server for Claude Code. No more `SiaAgent.run()` wrapper needed.
+Sia is now a **hooks-based Python package** for Claude Code observability.
 
 **How it works:**
 ```
-Claude Code → MCP Protocol → Sia MCP Server → Control Plane → UI
-```
-
-### 2. Auto-Start Control Plane - COMPLETE
-
-The `sia mcp` command now automatically starts the control plane in the background if it's not running. No need to run `sia start` separately.
-
-**Key changes to `mcp.py`:**
-- Added `_start_control_plane()` function that checks if server is running
-- Spawns uvicorn as background process if needed
-- Waits for server to be ready before proceeding
-- Registers cleanup on exit via `atexit`
-
-### 3. Single-Server Frontend - COMPLETE
-
-Built the React frontend and bundled it into the FastAPI backend.
-
-**Build output:** `frontend/` → `backend/src/sia/static/`
-
-The control plane now serves the UI directly at http://localhost:8000
-
-### 4. Project-Level MCP Config - COMPLETE
-
-Configured Sia MCP for the `Intro-to-C` repo using `.mcp.json`:
-
-```json
-{
-    "mcpServers": {
-        "sia": {
-            "command": "C:\\Users\\okohe\\anaconda3\\envs\\Sia\\Scripts\\sia.exe",
-            "args": ["mcp"]
-        }
-    }
-}
+Claude Code → Hooks → Sia Control Plane → Web UI
 ```
 
 ---
@@ -53,82 +18,117 @@ Configured Sia MCP for the `Intro-to-C` repo using `.mcp.json`:
 ## Current State
 
 **Working:**
-- `pip install -e .` in `backend/` installs the `sia` package (in Sia conda env)
-- Claude Code in any repo with `.mcp.json` gets Sia tools automatically
-- Control plane auto-starts when Claude Code connects
+- `pip install -e .` in `backend/` installs the `sia` package
+- `sia init` sets up Claude Code hooks in your project
+- `sia start` runs the control plane daemon with bundled UI
+- All Claude Code tool usage is automatically tracked via hooks
 - UI available at http://localhost:8000
-- Tool calls visible in real-time
+- Agents, plans, tool calls, and work units visible in real-time
 
-**Tools available to Claude Code:**
-- `sia_echo` - Test connection
-- `sia_read_file` - Read files (logged)
-- `sia_write_file` - Write files (logged)
-- `sia_run_command` - Execute commands (logged)
+**What gets tracked:**
+- All tool calls (Read, Write, Bash, etc.)
+- Execution plans (from TodoWrite)
+- File operations (as work units)
+- Step progress and logs
 
 ---
 
 ## How to Use
 
-### Setup (one-time)
+### Setup (one-time per project)
+
 ```bash
-conda activate Sia
+# 1. Install package
 cd H:/Sia/backend
 pip install -e .
-```
 
-### In any project
-Create `.mcp.json` in project root:
-```json
-{
-    "mcpServers": {
-        "sia": {
-            "command": "C:\\Users\\okohe\\anaconda3\\envs\\Sia\\Scripts\\sia.exe",
-            "args": ["mcp"]
-        }
-    }
-}
+# 2. Initialize hooks in your project
+cd /path/to/your/project
+sia init
 ```
 
 ### Run
+
 ```bash
-cd /path/to/project
+# Terminal 1 - Start control plane
+sia start
+
+# Terminal 2 - Use Claude Code normally
+cd /path/to/your/project
 claude
 ```
 
-Claude Code now has Sia tools. View activity at http://localhost:8000
+All activity is automatically tracked. View at http://localhost:8000
+
+---
+
+## Architecture
+
+### Components
+
+1. **Python Package** (`sia-agent`)
+   - CLI commands: `sia start`, `sia init`
+   - FastAPI control plane server
+   - Bundled React UI in `static/` directory
+
+2. **Hooks** (created by `sia init`)
+   - `.claude/hooks/sia-hook.sh` (or `.ps1`)
+   - `.claude/settings.json` with PostToolUse configuration
+   - Reports all tool usage to control plane
+
+3. **Control Plane** (`sia start`)
+   - FastAPI server on :8000
+   - Receives hook reports
+   - Serves bundled UI
+   - In-memory agent registry
+
+4. **Web UI**
+   - React frontend bundled in package
+   - Real-time polling (1 second intervals)
+   - Shows agents, plans, tool calls, work units
 
 ---
 
 ## Next Steps
 
-### Phase 1: Lock Service (Steps 5-8 from PLAN.md)
-1. **Work Unit Model** - Track files/directories/processes as resources
-2. **Lock Service** - Exclusive locks with TTL expiration
-3. **`sia_claim` / `sia_release` tools** - Agents request locks before writing
-4. **Blocking & Queuing** - Agents wait when resource is locked
+### Phase 1: Enhanced Telemetry
+1. **Subagent tracking** - Detect and track child agents
+2. **Better plan extraction** - More sophisticated plan parsing
+3. **WebSocket updates** - Replace polling with real-time push
 
-### Phase 2: Enhanced Observability (Steps 15-17)
-1. **WebSocket updates** - Replace polling with real-time push
-2. **Execution timeline** - Per-agent event history
-3. **Global activity view** - All agents interleaved
+### Phase 2: Coordination Features
+1. **Lock service** - Resource locking and queuing
+2. **Agent blocking** - Prevent conflicts
+3. **Resource delegation** - Parent-child coordination
 
-### Phase 3: Multi-Agent Coordination (Steps 12-14)
-1. **`sia_spawn` tool** - Create child Claude Code instances
-2. **Parent-child tracking** - Hierarchy visualization
-3. **Resource delegation** - Pass locks to children
-
-### Phase 4: Distribution
-1. Publish to PyPI as `sia-agent`
-2. Simplify MCP config (just `sia` command in PATH)
-3. Documentation and README
+### Phase 3: Distribution
+1. **PyPI publication** - `pip install sia-agent`
+2. **Documentation** - Complete README and guides
+3. **Versioning** - Semantic versioning
 
 ---
 
-## Key Insight
+## Key Design Decisions
 
-The pivot from `SiaAgent.run()` to MCP was the right call. Now:
-- You use Claude Code directly (not a wrapper)
-- Multiple Claude Code instances can connect to the same control plane
-- Sia provides coordination without changing how you work
+1. **Hooks over MCP** - Simpler, no protocol complexity
+2. **Bundled UI** - Single package, no separate frontend install
+3. **Automatic tracking** - Zero configuration after `sia init`
+4. **In-memory storage** - Fast, simple, can add persistence later
 
-**The MCP server IS the bridge.**
+---
+
+## Testing
+
+### Quick Test
+
+1. Install: `pip install -e .`
+2. Initialize: `sia init` (in a test project)
+3. Start: `sia start`
+4. Use Claude Code: `claude`
+5. Check UI: http://localhost:8000
+
+You should see:
+- Agent registered automatically
+- Tool calls appearing in real-time
+- Plans extracted from TodoWrite
+- Work units for file operations

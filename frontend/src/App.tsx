@@ -44,7 +44,7 @@ interface Agent {
   task: string
   name: string | null
   model: string | null
-  source: 'mcp' | 'sdk' | 'unknown'
+  source: 'hooks' | 'sdk' | 'unknown'
   state: 'pending' | 'running' | 'completed' | 'failed'
   response: string | null
   error: string | null
@@ -53,6 +53,9 @@ interface Agent {
   created_at: string
   started_at: string | null
   completed_at: string | null
+  session_id: string | null
+  working_directory: string | null
+  last_activity: string | null
 }
 
 interface WorkUnit {
@@ -113,6 +116,25 @@ function App() {
       // Ignore fetch errors
     }
   }, [])
+
+  // Delete an agent
+  const deleteAgent = useCallback(async (agentId: string) => {
+    try {
+      const response = await fetch(`${API_URL}/api/agents/${agentId}`, {
+        method: 'DELETE'
+      })
+      if (response.ok) {
+        // Clear selection if deleted agent was selected
+        if (selectedAgentId === agentId) {
+          setSelectedAgentId(null)
+        }
+        // Refresh agents list
+        fetchAgents()
+      }
+    } catch {
+      // Ignore errors
+    }
+  }, [selectedAgentId, fetchAgents])
 
   // Poll agents and work units every second
   useEffect(() => {
@@ -191,7 +213,7 @@ function App() {
             {agents.length === 0 ? (
               <div className="no-agents">
                 <p>No agents connected</p>
-                <p className="hint">Connect Claude Code via MCP to see agents here</p>
+                <p className="hint">Run 'sia init' in your project to start tracking agents</p>
               </div>
             ) : (
               agents.map(agent => (
@@ -202,10 +224,27 @@ function App() {
                 >
                   <div className="agent-item-header">
                     <span className="agent-id">{agent.name || agent.id}</span>
-                    <span className={`badge ${getStateBadgeClass(agent.state)}`}>
-                      {agent.state}
-                    </span>
+                    <div className="agent-item-actions">
+                      <span className={`badge ${getStateBadgeClass(agent.state)}`}>
+                        {agent.state}
+                      </span>
+                      <button
+                        className="delete-btn"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          deleteAgent(agent.id)
+                        }}
+                        title="Remove agent"
+                      >
+                        ×
+                      </button>
+                    </div>
                   </div>
+                  {agent.working_directory && (
+                    <p className="agent-directory" title={agent.working_directory}>
+                      {agent.working_directory.replace(/\\/g, '/').split('/').pop()}
+                    </p>
+                  )}
                   <p className="agent-task-preview">
                     {agent.task.length > 50 ? agent.task.slice(0, 50) + '...' : agent.task}
                   </p>
@@ -237,20 +276,19 @@ function App() {
               <p>Select an agent from the sidebar to view its execution details.</p>
               <div className="usage-hint">
                 <h3>Setup</h3>
-                <pre>{`# 1. Start control plane
+                <pre>{`# 1. Install package
+pip install -e path/to/sia/backend
+
+# 2. Initialize hooks in your project
+sia init
+
+# 3. Start control plane
 sia start
 
-# 2. Add to Claude Code config (~/.claude.json)
-{
-  "mcpServers": {
-    "sia": {
-      "command": "sia",
-      "args": ["mcp"]
-    }
-  }
-}
+# 4. Use Claude Code normally
+claude
 
-# 3. Use Claude Code normally - sia_* tools available`}</pre>
+# All activity is automatically tracked!`}</pre>
               </div>
             </div>
           ) : (
@@ -267,9 +305,18 @@ sia start
                 <p className="task-text">{selectedAgent.task}</p>
               </div>
 
+              {selectedAgent.working_directory && (
+                <div className="detail-row">
+                  <span className="detail-label">Directory</span>
+                  <span className="detail-value" title={selectedAgent.working_directory}>
+                    {selectedAgent.working_directory}
+                  </span>
+                </div>
+              )}
+
               <div className="detail-row">
                 <span className="detail-label">Source</span>
-                <span className="detail-value">{selectedAgent.source === 'mcp' ? 'Claude Code (MCP)' : selectedAgent.source}</span>
+                <span className="detail-value">{selectedAgent.source === 'hooks' ? 'Claude Code (Hooks)' : selectedAgent.source}</span>
               </div>
 
               {selectedAgent.model && (

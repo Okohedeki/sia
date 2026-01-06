@@ -2,7 +2,7 @@
 
 ## Summary
 
-Sia is now an MCP server that connects Claude Code to a control plane for observability. When you use Claude Code with Sia configured, all `sia_*` tool calls are logged and visible in a real-time UI.
+Sia is a Python package that provides observability for Claude Code via hooks. When you use Claude Code with Sia hooks configured, all tool usage is automatically logged and visible in a real-time web UI.
 
 ---
 
@@ -11,27 +11,27 @@ Sia is now an MCP server that connects Claude Code to a control plane for observ
 ```
 Claude Code (your normal CLI)
        │
-       │ MCP protocol (stdio)
+       │ Hooks (PostToolUse)
        ▼
-Sia MCP Server (`sia mcp`)
+Sia Hook Script (reports to control plane)
        │
        │ HTTP
        ▼
 Sia Control Plane (`sia start`)
        │
        ▼
-Frontend UI (React)
+Frontend UI (React - bundled in package)
 ```
 
 ---
 
-## What Changed (This Session)
+## What Changed
 
-1. **Removed `SiaAgent` wrapper** - No longer wrapping the Claude SDK
-2. **Added MCP server** (`mcp.py`) - Provides tools to Claude Code via MCP protocol
-3. **Added `sia mcp` command** - Starts the MCP server
-4. **Updated models** - Added `source` field to track agent origin (mcp/sdk)
-5. **Updated frontend** - Shows MCP setup instructions, displays agent source
+1. **Hook-based telemetry** - Claude Code hooks automatically report all tool usage
+2. **Python package** - Installable via `pip install -e .`
+3. **Simple setup** - Run `sia init` to configure hooks, `sia start` to run the daemon
+4. **Bundled UI** - React frontend is packaged with the Python package
+5. **Automatic tracking** - No manual tool calls needed, all activity is tracked
 
 ---
 
@@ -41,11 +41,12 @@ Frontend UI (React)
 
 | File | Purpose |
 |------|---------|
-| `mcp.py` | MCP server - provides sia_* tools to Claude Code |
 | `main.py` | FastAPI control plane API |
 | `registry.py` | In-memory agent store |
 | `models.py` | Pydantic models |
-| `cli.py` | CLI with `start` and `mcp` commands |
+| `cli.py` | CLI with `start` and `init` commands |
+| `hooks.py` | Hook script helper (for reference) |
+| `static/` | Bundled React frontend |
 | `__init__.py` | Package exports |
 
 ### Frontend (`frontend/src/`)
@@ -57,19 +58,30 @@ Frontend UI (React)
 
 ---
 
-## Installation (New Repo)
+## Installation
 
 ### 1. Install Sia
 
 ```bash
-# Clone or copy the Sia project
+# From the Sia directory
 cd path/to/sia/backend
 
 # Install in editable mode
 pip install -e .
 ```
 
-### 2. Start Control Plane
+### 2. Initialize Hooks in Your Project
+
+```bash
+# In your project directory
+sia init
+```
+
+This creates:
+- `.claude/hooks/sia-hook.sh` (or `.ps1` on Windows)
+- `.claude/settings.json` with PostToolUse hook configured
+
+### 3. Start Control Plane
 
 ```bash
 # Terminal 1
@@ -78,59 +90,35 @@ sia start
 
 Opens browser to http://localhost:8000 with the UI.
 
-### 3. Configure Claude Code
-
-Add to your Claude Code config (`~/.claude.json` or project `.claude/settings.json`):
-
-```json
-{
-  "mcpServers": {
-    "sia": {
-      "command": "sia",
-      "args": ["mcp"]
-    }
-  }
-}
-```
-
 ### 4. Use Claude Code
 
 ```bash
-# Terminal 2 - in any repo
+# Terminal 2 - in your project
 claude
 ```
 
-Claude Code now has these tools available:
-- `sia_echo` - Test connection
-- `sia_read_file` - Read files (logged)
-- `sia_write_file` - Write files (logged)
-- `sia_run_command` - Run commands (logged)
-
-All tool calls appear in the Sia UI in real-time.
+All tool usage is automatically tracked and visible in the Sia UI.
 
 ---
 
-## Testing the MVP
+## How It Works
 
-### Quick Test
+1. **Hook Installation**: `sia init` sets up Claude Code hooks that run after each tool use
+2. **Automatic Reporting**: Hooks send tool data to the control plane API
+3. **Agent Registration**: First tool use from a session auto-registers an agent
+4. **Real-time UI**: Web interface shows agents, plans, tool calls, and work units
+5. **Plan Tracking**: TodoWrite tool calls are automatically parsed into execution plans
 
-1. Start control plane: `sia start`
-2. In another terminal, test MCP server directly:
+---
 
-```bash
-# Send a tools/list request
-echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | sia mcp
-```
+## Current Features
 
-Should output JSON with available tools.
-
-### Full Test with Claude Code
-
-1. Start control plane: `sia start`
-2. Configure Claude Code (see above)
-3. Open Claude Code: `claude`
-4. Ask Claude to use a sia tool: "Use sia_echo to say hello"
-5. Watch the UI update in real-time
+- **Automatic agent tracking** - Each Claude Code session becomes an agent
+- **Tool call logging** - All tool executions are recorded
+- **Plan extraction** - TodoWrite calls create execution plans
+- **Work unit tracking** - File operations are tracked as work units
+- **Real-time UI** - Web interface with polling updates
+- **Step tracking** - Plans broken down into steps with status
 
 ---
 

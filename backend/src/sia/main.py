@@ -34,6 +34,7 @@ class HookPayload(BaseModel):
     tool_output: str = ""
     session_id: str = ""
     working_directory: str = ""
+    tool_data: str = ""  # Raw tool data from hook script
 
 
 # Track session_id -> agent_id mapping
@@ -48,6 +49,16 @@ app = FastAPI(
     version="0.1.0",
 )
 
+# Enable logging for debugging
+import logging
+import asyncio
+from datetime import datetime, timedelta
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("sia")
+
+# Stale session timeout (seconds) - agents with no activity for this long are removed
+STALE_SESSION_TIMEOUT = 60
+
 # CORS configuration - allow connections from anywhere (agents run externally)
 app.add_middleware(
     CORSMiddleware,
@@ -56,6 +67,35 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+async def cleanup_stale_sessions():
+    """Background task to remove inactive agents."""
+    while True:
+        await asyncio.sleep(10)  # Check every 10 seconds
+        try:
+            cutoff = datetime.utcnow() - timedelta(seconds=STALE_SESSION_TIMEOUT)
+            agents = registry.list_all()
+            for agent in agents:
+                if agent.source.value == "hooks" and agent.last_activity < cutoff:
+                    # Remove stale agent
+                    session_to_remove = None
+                    for sid, aid in list(_session_agents.items()):
+                        if aid == agent.id:
+                            session_to_remove = sid
+                            break
+                    if session_to_remove:
+                        del _session_agents[session_to_remove]
+                    registry.remove(agent.id)
+                    logger.info(f"[Cleanup] Removed stale agent {agent.name} (inactive for {STALE_SESSION_TIMEOUT}s)")
+        except Exception as e:
+            logger.error(f"[Cleanup] Error: {e}")
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Start background tasks on server startup."""
+    asyncio.create_task(cleanup_stale_sessions())
 
 
 # Health check
@@ -191,26 +231,60 @@ async def get_agent_work_units(agent_id: str):
 @app.post("/api/hooks/tool-use")
 async def hook_tool_use(payload: HookPayload):
     """Handle tool use reports from Claude Code hooks."""
+    import json as json_module
+
     session_id = payload.session_id or "default"
+
+    # Parse tool_data from hook script
+    tool_name = payload.tool_name
+    tool_input = payload.tool_input
+    tool_output = payload.tool_output
+
+    if payload.tool_data:
+        try:
+            data = json_module.loads(payload.tool_data)
+            tool_name = data.get("tool_name") or data.get("tool") or data.get("name") or tool_name
+            tool_input = data.get("tool_input") or data.get("input") or tool_input or {}
+            tool_output = str(data.get("tool_output") or data.get("output") or tool_output or "")
+        except (json_module.JSONDecodeError, TypeError):
+            tool_output = payload.tool_data[:500] if not tool_output else tool_output
+
+    if not tool_name:
+        logger.warning(f"[Hook] No tool name - raw data: {payload.tool_data[:100] if payload.tool_data else 'empty'}")
+        return {"status": "skipped", "reason": "no tool name"}
+
+    logger.info(f"[Hook] {tool_name} | session={session_id[:8]}...")
 
     # Get or create agent for this session
     if session_id not in _session_agents:
         # Auto-register agent for this session
-        task = f"Session in {payload.working_directory.split('/')[-1] or payload.working_directory.split(chr(92))[-1] or 'unknown'}"
+        working_dir = payload.working_directory or ""
+        dir_name = "unknown"
+        if working_dir:
+            parts = working_dir.replace("\\", "/").split("/")
+            dir_name = parts[-1] if parts else "unknown"
+        task = f"Session in {dir_name}"
+        agent_name = f"claude-{session_id[:8]}" if session_id != "default" else "claude-session"
         agent = registry.register(
             task=task,
-            name=f"claude-{session_id[:8]}" if session_id != "default" else "claude-session",
+            name=agent_name,
             model="claude-code",
-            source="mcp",
+            source="hooks",
+            session_id=session_id,
+            working_directory=working_dir,
         )
         _session_agents[session_id] = agent.id
         registry.update_state(agent.id, "running")
+        logger.info(f"[Agent Connected] {agent_name} | dir={dir_name} | id={agent.id}")
 
     agent_id = _session_agents[session_id]
 
+    # Update last activity
+    registry.touch(agent_id)
+
     # Handle TodoWrite specially - extract plan
-    if payload.tool_name == "TodoWrite":
-        todos = payload.tool_input.get("todos", [])
+    if tool_name == "TodoWrite":
+        todos = tool_input.get("todos", [])
         if todos:
             steps = [t.get("content", "") for t in todos if t.get("content")]
             if steps:
@@ -227,16 +301,16 @@ async def hook_tool_use(payload: HookPayload):
     file_path = None
     operation = "unknown"
 
-    if payload.tool_name in ("Read", "read_file", "sia_read_file"):
-        file_path = payload.tool_input.get("file_path") or payload.tool_input.get("path")
+    if tool_name in ("Read", "read_file", "sia_read_file"):
+        file_path = tool_input.get("file_path") or tool_input.get("path")
         operation = "read"
-    elif payload.tool_name in ("Write", "write_file", "sia_write_file"):
-        file_path = payload.tool_input.get("file_path") or payload.tool_input.get("path")
+    elif tool_name in ("Write", "write_file", "sia_write_file"):
+        file_path = tool_input.get("file_path") or tool_input.get("path")
         operation = "write"
-    elif payload.tool_name in ("Edit", "edit_file"):
-        file_path = payload.tool_input.get("file_path")
+    elif tool_name in ("Edit", "edit_file"):
+        file_path = tool_input.get("file_path")
         operation = "write"
-    elif payload.tool_name in ("Bash", "bash", "sia_run_command"):
+    elif tool_name in ("Bash", "bash", "sia_run_command"):
         operation = "execute"
 
     if file_path:
@@ -245,9 +319,9 @@ async def hook_tool_use(payload: HookPayload):
     # Record the tool call
     registry.add_tool_call(
         agent_id=agent_id,
-        tool_name=payload.tool_name,
-        tool_input=payload.tool_input,
-        tool_output=payload.tool_output[:1000] if payload.tool_output else "",  # Truncate long outputs
+        tool_name=tool_name,
+        tool_input=tool_input,
+        tool_output=tool_output[:1000] if tool_output else "",  # Truncate long outputs
         duration_ms=0,  # Hooks don't have timing info
     )
 
@@ -270,6 +344,36 @@ async def get_agent(agent_id: str):
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
     return AgentResponse(**agent.model_dump())
+
+
+@app.delete("/api/agents/{agent_id}")
+async def remove_agent(agent_id: str):
+    """Remove an agent by ID."""
+    # Also remove from session mapping
+    session_to_remove = None
+    for sid, aid in _session_agents.items():
+        if aid == agent_id:
+            session_to_remove = sid
+            break
+    if session_to_remove:
+        del _session_agents[session_to_remove]
+
+    if registry.remove(agent_id):
+        logger.info(f"[Agent Removed] id={agent_id}")
+        return {"status": "ok", "agent_id": agent_id}
+    raise HTTPException(status_code=404, detail="Agent not found")
+
+
+@app.delete("/api/sessions/{session_id}")
+async def remove_session(session_id: str):
+    """Remove an agent by session ID."""
+    if session_id in _session_agents:
+        agent_id = _session_agents[session_id]
+        del _session_agents[session_id]
+        registry.remove(agent_id)
+        logger.info(f"[Session Removed] session={session_id[:8]}... agent={agent_id}")
+        return {"status": "ok", "session_id": session_id}
+    raise HTTPException(status_code=404, detail="Session not found")
 
 
 # Serve frontend static files

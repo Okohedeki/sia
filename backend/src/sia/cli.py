@@ -1,4 +1,4 @@
-"""Sia CLI - Command line interface for the control plane and MCP server."""
+"""Sia CLI - Command line interface for the control plane and Claude hooks."""
 
 import argparse
 import sys
@@ -37,31 +37,21 @@ def main():
         help="Don't open browser automatically",
     )
 
-    # sia mcp
-    mcp_parser = subparsers.add_parser("mcp", help="Start MCP server for Claude Code")
-    mcp_parser.add_argument(
-        "--control-plane",
-        default="http://localhost:8000",
-        help="Control plane URL (default: http://localhost:8000)",
-    )
-
     # sia init
     init_parser = subparsers.add_parser("init", help="Initialize Sia hooks for Claude Code")
     init_parser.add_argument(
-        "--global",
-        dest="global_install",
-        action="store_true",
-        help="Install hooks globally (default: current project only)",
+        "--port",
+        type=int,
+        default=8000,
+        help="Port where Sia control plane runs (default: 8000)",
     )
 
     args = parser.parse_args()
 
     if args.command == "start":
         start_server(args.host, args.port, not args.no_browser)
-    elif args.command == "mcp":
-        start_mcp(args.control_plane)
     elif args.command == "init":
-        init_hooks(args.global_install)
+        init_hooks(args.port)
     else:
         parser.print_help()
         sys.exit(1)
@@ -85,61 +75,47 @@ def start_server(host: str, port: int, open_browser: bool):
         "sia.main:app",
         host=host,
         port=port,
-        log_level="warning",
+        log_level="info",
     )
 
 
-def start_mcp(control_plane: str):
-    """Start the MCP server for Claude Code integration."""
-    from .mcp import main as mcp_main
-    mcp_main(control_plane=control_plane)
+def init_hooks(port: int = 8000):
+    """Initialize Sia for Claude Code with hook-based tracking."""
+    project_dir = Path.cwd()
+    hooks_dir = project_dir / ".claude" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
 
+    api_url = f"http://localhost:{port}/api/hooks/tool-use"
 
-def init_hooks(global_install: bool):
-    """Initialize Sia hooks for Claude Code."""
-    # Find the sia executable path
-    sia_executable = sys.executable.replace("python.exe", "Scripts\\sia.exe")
-    if not os.path.exists(sia_executable):
-        # Try finding it via which/where
-        import shutil
-        sia_executable = shutil.which("sia") or "sia"
+    # Bash script (works on Unix, and Windows via Git Bash)
+    hook_script = hooks_dir / "sia-hook.sh"
+    hook_content = f'''#!/bin/bash
+# Sia Hook - Reports tool usage to control plane
+input_data=$(cat)
+if [ -n "$input_data" ]; then
+    # JSON-escape the input using python
+    escaped=$(echo "$input_data" | python -c "import sys,json; print(json.dumps(sys.stdin.read()))")
+    curl -s -X POST "{api_url}" \\
+        -H "Content-Type: application/json" \\
+        -d "{{\\"hook_type\\":\\"$CLAUDE_HOOK_TYPE\\",\\"session_id\\":\\"$CLAUDE_SESSION_ID\\",\\"working_directory\\":\\"$CLAUDE_WORKING_DIRECTORY\\",\\"tool_data\\":$escaped}}" \\
+        --max-time 2 2>/dev/null || true
+fi
+'''
 
-    # The hook command - runs Python module
-    python_exe = sys.executable
-    hook_command = f'{python_exe} -m sia.hooks'
+    with open(hook_script, "w", newline='\n') as f:
+        f.write(hook_content)
 
-    # Hook configuration for Claude Code
-    hook_config = {
-        "hooks": {
-            "PostToolUse": [
-                {
-                    "matcher": ".*",  # Match all tools
-                    "hooks": [hook_command]
-                }
-            ]
-        }
-    }
+    os.chmod(hook_script, 0o755)
 
-    if global_install:
-        # Install to global Claude Code settings
-        settings_paths = [
-            Path.home() / ".claude" / "settings.json",
-            Path.home() / ".config" / "claude-code" / "settings.json",
-        ]
-        settings_path = None
-        for p in settings_paths:
-            if p.parent.exists():
-                settings_path = p
-                break
-        if not settings_path:
-            settings_path = settings_paths[0]
-            settings_path.parent.mkdir(parents=True, exist_ok=True)
+    # On Windows, use Git Bash explicitly
+    if sys.platform == "win32":
+        hook_command = f'"C:\\Program Files\\Git\\bin\\bash.exe" "{hook_script}"'
     else:
-        # Install to current project
-        settings_path = Path.cwd() / ".claude" / "settings.json"
-        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        hook_command = f'bash "{hook_script}"'
 
-    # Load existing settings or create new
+    # Create Claude settings with hooks
+    settings_path = project_dir / ".claude" / "settings.json"
+
     existing_settings = {}
     if settings_path.exists():
         try:
@@ -148,41 +124,29 @@ def init_hooks(global_install: bool):
         except (json.JSONDecodeError, IOError):
             pass
 
-    # Merge hook configuration
     if "hooks" not in existing_settings:
         existing_settings["hooks"] = {}
 
-    # Add PostToolUse hook
-    if "PostToolUse" not in existing_settings["hooks"]:
-        existing_settings["hooks"]["PostToolUse"] = []
+    existing_settings["hooks"]["PostToolUse"] = [
+        {
+            "matcher": "*",
+            "hooks": [{"type": "command", "command": hook_command}]
+        }
+    ]
 
-    # Check if sia hook already exists
-    sia_hook_exists = False
-    for hook in existing_settings["hooks"]["PostToolUse"]:
-        if isinstance(hook, dict) and "sia.hooks" in str(hook.get("hooks", [])):
-            sia_hook_exists = True
-            break
-
-    if not sia_hook_exists:
-        existing_settings["hooks"]["PostToolUse"].append({
-            "matcher": ".*",
-            "hooks": [hook_command]
-        })
-
-    # Write settings
     with open(settings_path, "w") as f:
         json.dump(existing_settings, f, indent=2)
 
     print(f"\n  Sia Initialized!")
     print(f"  ================")
-    print(f"  Hooks installed to: {settings_path}")
+    print(f"  Hook: {hook_script}")
+    print(f"  Config: {settings_path}")
     print(f"")
-    print(f"  Next steps:")
-    print(f"    1. Run 'sia start' to start the control plane")
-    print(f"    2. Open Claude Code in any project")
-    print(f"    3. All tool usage will be automatically tracked!")
+    print(f"  Usage:")
+    print(f"    1. Run 'sia start --port {port}' to launch control plane")
+    print(f"    2. Use Claude Code in this project")
     print(f"")
-    print(f"  View activity at: http://localhost:8000")
+    print(f"  Dashboard: http://localhost:{port}")
     print()
 
 

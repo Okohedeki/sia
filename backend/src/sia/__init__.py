@@ -2,12 +2,12 @@
 
 __version__ = "0.1.0"
 
-# Sia is now MCP-native. Use `sia mcp` to start the MCP server
-# and connect Claude Code to the Sia control plane.
+# Sia uses Claude Code hooks for telemetry and observability.
 #
 # Usage:
-#   1. Start control plane: sia start
-#   2. Configure Claude Code to use Sia MCP server
-#   3. Claude Code now has sia_* tools available
+#   1. Install: pip install -e .
+#   2. Initialize hooks: sia init
+#   3. Start control plane: sia start
+#   4. Use Claude Code normally - all activity is tracked via hooks
 
 __all__ = ["__version__"]

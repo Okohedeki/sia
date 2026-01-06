@@ -15,7 +15,7 @@ class AgentState(str, Enum):
 
 
 class AgentSource(str, Enum):
-    MCP = "mcp"           # Claude Code via MCP
+    HOOKS = "hooks"       # Claude Code via hooks
     SDK = "sdk"           # Programmatic via SDK
     UNKNOWN = "unknown"
 
@@ -96,6 +96,10 @@ class Agent(BaseModel):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+    # Session tracking
+    session_id: Optional[str] = None
+    working_directory: Optional[str] = None
+    last_activity: datetime = Field(default_factory=datetime.utcnow)
 
 
 # API Request/Response models
@@ -104,7 +108,7 @@ class RegisterAgentRequest(BaseModel):
     task: str
     name: Optional[str] = None
     model: Optional[str] = None
-    source: Optional[str] = None  # "mcp", "sdk", etc.
+    source: Optional[str] = None  # "hooks", "sdk", etc.
 
 
 class UpdateStateRequest(BaseModel):
@@ -199,3 +203,6 @@ class AgentResponse(BaseModel):
     created_at: datetime
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+    session_id: Optional[str] = None
+    working_directory: Optional[str] = None
+    last_activity: Optional[datetime] = None

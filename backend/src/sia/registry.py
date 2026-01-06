@@ -21,6 +21,8 @@ class AgentRegistry:
         name: Optional[str] = None,
         model: Optional[str] = None,
         source: Optional[str] = None,
+        session_id: Optional[str] = None,
+        working_directory: Optional[str] = None,
     ) -> Agent:
         """Register a new agent."""
         # Parse source
@@ -31,13 +33,46 @@ class AgentRegistry:
             except ValueError:
                 pass
 
-        agent = Agent(task=task, name=name, model=model, source=agent_source)
+        agent = Agent(
+            task=task,
+            name=name,
+            model=model,
+            source=agent_source,
+            session_id=session_id,
+            working_directory=working_directory,
+        )
         self._agents[agent.id] = agent
         return agent
 
     def get(self, agent_id: str) -> Optional[Agent]:
         """Get an agent by ID."""
         return self._agents.get(agent_id)
+
+    def remove(self, agent_id: str) -> bool:
+        """Remove an agent by ID."""
+        if agent_id in self._agents:
+            # Also clean up work units
+            self.clear_agent_work_units(agent_id)
+            del self._agents[agent_id]
+            return True
+        return False
+
+    def remove_by_session(self, session_id: str) -> bool:
+        """Remove an agent by session ID."""
+        agent_id = None
+        for aid, agent in self._agents.items():
+            if agent.session_id == session_id:
+                agent_id = aid
+                break
+        if agent_id:
+            return self.remove(agent_id)
+        return False
+
+    def touch(self, agent_id: str) -> None:
+        """Update last_activity timestamp for an agent."""
+        agent = self._agents.get(agent_id)
+        if agent:
+            agent.last_activity = datetime.utcnow()
 
     def list_all(self) -> list[Agent]:
         """List all agents, newest first."""

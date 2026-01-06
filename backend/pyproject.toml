@@ -1,7 +1,7 @@
 [project]
 name = "sia-agent"
 version = "0.1.0"
-description = "Runtime & Control Plane for Multi-Agent AI Execution - MCP Server for Claude Code"
+description = "Runtime & Control Plane for Multi-Agent AI Execution - Claude hooks telemetry"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115.0",
