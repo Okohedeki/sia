@@ -409,3 +409,370 @@
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
+
+/* Right Sidebar for Work Units */
+.sidebar-right {
+  width: 280px;
+  background-color: #141414;
+  border-left: 1px solid #333;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.work-units-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.5rem;
+}
+
+.no-work-units {
+  color: #666;
+  font-size: 0.875rem;
+  text-align: center;
+  padding: 2rem 1rem;
+}
+
+.no-work-units .hint {
+  font-size: 0.75rem;
+  margin-top: 0.5rem;
+  color: #555;
+}
+
+.work-unit-item {
+  padding: 0.75rem;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+  margin-bottom: 0.5rem;
+  background-color: #1a1a1a;
+  border-left: 3px solid #333;
+}
+
+.work-unit-item:hover {
+  background-color: #222;
+}
+
+.work-unit-item.highlighted {
+  border-left-color: #3b82f6;
+  background-color: #1a1a2a;
+}
+
+.work-unit-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.25rem;
+}
+
+.work-unit-file {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.8rem;
+  color: #e0e0e0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.work-unit-op {
+  font-size: 0.65rem;
+  font-weight: 500;
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  text-transform: uppercase;
+}
+
+.op-read {
+  background-color: #1e3a5f;
+  color: #60a5fa;
+}
+
+.op-write {
+  background-color: #3d2e1e;
+  color: #f59e0b;
+}
+
+.op-execute {
+  background-color: #1e3d1e;
+  color: #4ade80;
+}
+
+.op-unknown {
+  background-color: #333;
+  color: #888;
+}
+
+.work-unit-details {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+
+.work-unit-agent {
+  font-size: 0.7rem;
+  color: #888;
+}
+
+.work-unit-step {
+  font-size: 0.65rem;
+  color: #666;
+  background-color: #2a2a2a;
+  padding: 0.1rem 0.3rem;
+  border-radius: 2px;
+}
+
+.work-unit-path {
+  font-size: 0.65rem;
+  color: #555;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Agent Plan Preview in Sidebar */
+.agent-plan-preview {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+  align-items: center;
+}
+
+.plan-progress {
+  font-size: 0.7rem;
+  color: #22c55e;
+  background-color: #0d2818;
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+}
+
+.current-step {
+  font-size: 0.65rem;
+  color: #eab308;
+  background-color: #2a2a0a;
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+}
+
+/* Plan Section Styles */
+.plan-section {
+  background-color: #1a1a1a;
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+.plan-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.plan-step {
+  padding: 0.75rem;
+  border-radius: 6px;
+  background-color: #222;
+  border-left: 3px solid #444;
+  transition: all 0.2s ease;
+}
+
+.plan-step.current {
+  background-color: #2a2a1a;
+  border-left-color: #eab308;
+}
+
+.plan-step.step-pending {
+  border-left-color: #555;
+}
+
+.plan-step.step-in-progress {
+  border-left-color: #eab308;
+}
+
+.plan-step.step-completed {
+  border-left-color: #22c55e;
+}
+
+.plan-step.step-skipped {
+  border-left-color: #888;
+  opacity: 0.7;
+}
+
+.step-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.step-index {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #888;
+  background-color: #333;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.step-in-progress .step-index {
+  background-color: #854d0e;
+  color: #fde047;
+}
+
+.step-completed .step-index {
+  background-color: #166534;
+  color: #86efac;
+}
+
+.step-description {
+  flex: 1;
+  font-size: 0.85rem;
+  color: #e0e0e0;
+}
+
+.step-status-badge {
+  font-size: 0.65rem;
+  font-weight: 500;
+  padding: 0.15rem 0.4rem;
+  border-radius: 3px;
+  text-transform: uppercase;
+}
+
+.step-status-badge.step-pending {
+  background-color: #374151;
+  color: #9ca3af;
+}
+
+.step-status-badge.step-in-progress {
+  background-color: #854d0e;
+  color: #fde047;
+}
+
+.step-status-badge.step-completed {
+  background-color: #166534;
+  color: #86efac;
+}
+
+.step-status-badge.step-skipped {
+  background-color: #444;
+  color: #888;
+}
+
+/* Step Files */
+.step-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+  padding-left: 2.5rem;
+  align-items: center;
+}
+
+.files-label {
+  font-size: 0.7rem;
+  color: #888;
+  margin-right: 0.25rem;
+}
+
+.file-tag {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.7rem;
+  background-color: #1a2a3a;
+  color: #60a5fa;
+  padding: 0.15rem 0.4rem;
+  border-radius: 3px;
+  max-width: 150px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Step Logs */
+.step-logs {
+  margin-top: 0.5rem;
+  padding-left: 2.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.step-log {
+  font-size: 0.75rem;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 3px;
+  background-color: #1a1a1a;
+}
+
+.step-log.log-info {
+  border-left: 2px solid #3b82f6;
+}
+
+.step-log.log-warning {
+  border-left: 2px solid #f59e0b;
+  background-color: #1a1a10;
+}
+
+.step-log.log-error {
+  border-left: 2px solid #ef4444;
+  background-color: #1a1010;
+}
+
+.step-log.log-debug {
+  border-left: 2px solid #888;
+  opacity: 0.8;
+}
+
+.log-time {
+  color: #666;
+  flex-shrink: 0;
+}
+
+.log-level {
+  color: #888;
+  flex-shrink: 0;
+}
+
+.log-message {
+  color: #e0e0e0;
+}
+
+.log-warning .log-message {
+  color: #fde047;
+}
+
+.log-error .log-message {
+  color: #fca5a5;
+}
+
+/* Step Running Indicator */
+.step-running-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  padding-left: 2.5rem;
+  color: #eab308;
+  font-size: 0.75rem;
+}
+
+.spinner.small {
+  width: 12px;
+  height: 12px;
+  border-width: 1.5px;
+}
+
+/* Tool Step Badge */
+.tool-step {
+  font-size: 0.65rem;
+  color: #888;
+  background-color: #2a2a2a;
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  margin-right: auto;
+  margin-left: 0.5rem;
+}

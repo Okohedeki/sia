@@ -184,6 +184,68 @@ class SiaMCPServer:
                     "required": ["command"],
                 },
             },
+            {
+                "name": "sia_set_plan",
+                "description": "Set your execution plan with steps. Call this when you have a plan for the task.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "steps": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "List of step descriptions in order",
+                        }
+                    },
+                    "required": ["steps"],
+                },
+            },
+            {
+                "name": "sia_update_step",
+                "description": "Update your current step status and the files you're working on.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "step_index": {
+                            "type": "integer",
+                            "description": "Step number (1-based)",
+                        },
+                        "status": {
+                            "type": "string",
+                            "enum": ["pending", "in_progress", "completed", "skipped"],
+                            "description": "New status for the step",
+                        },
+                        "files": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Files being worked on in this step (optional)",
+                        }
+                    },
+                    "required": ["step_index", "status"],
+                },
+            },
+            {
+                "name": "sia_log_step",
+                "description": "Add a log entry to a step for tracking progress or notes.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "step_index": {
+                            "type": "integer",
+                            "description": "Step number (1-based)",
+                        },
+                        "message": {
+                            "type": "string",
+                            "description": "Log message",
+                        },
+                        "level": {
+                            "type": "string",
+                            "enum": ["info", "warning", "error", "debug"],
+                            "description": "Log level (default: info)",
+                        }
+                    },
+                    "required": ["step_index", "message"],
+                },
+            },
         ]
 
     def execute_tool(self, tool_name: str, arguments: dict) -> str:
@@ -229,6 +291,58 @@ class SiaMCPServer:
                     result += f"Stdout:\n{proc.stdout}\n"
                 if proc.stderr:
                     result += f"Stderr:\n{proc.stderr}"
+
+            elif tool_name == "sia_set_plan":
+                steps = arguments.get("steps", [])
+                if not steps:
+                    result = "Error: No steps provided"
+                else:
+                    plan_result = self._report(f"/api/agents/{self.agent_id}/plan", {
+                        "steps": steps,
+                    })
+                    if plan_result:
+                        result = f"Plan set with {len(steps)} steps:\n"
+                        for i, step in enumerate(steps, 1):
+                            result += f"  {i}. {step}\n"
+                    else:
+                        result = "Error: Failed to set plan"
+
+            elif tool_name == "sia_update_step":
+                step_index = arguments.get("step_index")
+                status = arguments.get("status")
+                files = arguments.get("files")
+                if not step_index or not status:
+                    result = "Error: step_index and status are required"
+                else:
+                    update_data = {"status": status}
+                    if files:
+                        update_data["files"] = files
+                    step_result = self._report(
+                        f"/api/agents/{self.agent_id}/steps/{step_index}/status",
+                        update_data,
+                    )
+                    if step_result:
+                        result = f"Step {step_index} updated to '{status}'"
+                        if files:
+                            result += f"\nFiles: {', '.join(files)}"
+                    else:
+                        result = f"Error: Failed to update step {step_index}"
+
+            elif tool_name == "sia_log_step":
+                step_index = arguments.get("step_index")
+                message = arguments.get("message", "")
+                level = arguments.get("level", "info")
+                if not step_index or not message:
+                    result = "Error: step_index and message are required"
+                else:
+                    log_result = self._report(
+                        f"/api/agents/{self.agent_id}/steps/{step_index}/logs",
+                        {"message": message, "level": level},
+                    )
+                    if log_result:
+                        result = f"Log added to step {step_index}: [{level}] {message}"
+                    else:
+                        result = f"Error: Failed to add log to step {step_index}"
 
             else:
                 result = f"Error: Unknown tool {tool_name}"

@@ -2,7 +2,10 @@
 
 from datetime import datetime
 from typing import Optional
-from .models import Agent, AgentState, AgentSource, ToolCall
+from .models import (
+    Agent, AgentState, AgentSource, ToolCall,
+    Plan, PlanStep, StepLog, StepStatus, WorkUnit
+)
 
 
 class AgentRegistry:
@@ -10,6 +13,7 @@ class AgentRegistry:
 
     def __init__(self):
         self._agents: dict[str, Agent] = {}
+        self._work_units: dict[str, WorkUnit] = {}  # path -> WorkUnit
 
     def register(
         self,
@@ -79,20 +83,184 @@ class AgentRegistry:
         tool_input: dict,
         tool_output: str,
         duration_ms: int,
+        step_index: Optional[int] = None,
     ) -> Optional[ToolCall]:
         """Record a tool call for an agent."""
         agent = self._agents.get(agent_id)
         if not agent:
             return None
 
+        # Use current step index if not provided
+        if step_index is None and agent.plan and agent.plan.current_step_index:
+            step_index = agent.plan.current_step_index
+
         tool_call = ToolCall(
             tool_name=tool_name,
             tool_input=tool_input,
             tool_output=tool_output,
             duration_ms=duration_ms,
+            step_index=step_index,
         )
         agent.tool_calls.append(tool_call)
         return tool_call
+
+    # Plan management methods
+
+    def set_plan(
+        self,
+        agent_id: str,
+        steps: list[str],
+    ) -> Optional[Plan]:
+        """Set an agent's execution plan."""
+        agent = self._agents.get(agent_id)
+        if not agent:
+            return None
+
+        plan_steps = [
+            PlanStep(index=i + 1, description=desc)
+            for i, desc in enumerate(steps)
+        ]
+        agent.plan = Plan(steps=plan_steps)
+        return agent.plan
+
+    def update_step(
+        self,
+        agent_id: str,
+        step_index: int,
+        status: str,
+        files: Optional[list[str]] = None,
+    ) -> Optional[PlanStep]:
+        """Update a step's status and optionally its files."""
+        agent = self._agents.get(agent_id)
+        if not agent or not agent.plan:
+            return None
+
+        # Find the step
+        step = None
+        for s in agent.plan.steps:
+            if s.index == step_index:
+                step = s
+                break
+
+        if not step:
+            return None
+
+        # Update status
+        try:
+            new_status = StepStatus(status)
+        except ValueError:
+            return None
+
+        step.status = new_status
+
+        # Track timing
+        if new_status == StepStatus.IN_PROGRESS:
+            step.started_at = datetime.utcnow()
+            agent.plan.current_step_index = step_index
+        elif new_status in (StepStatus.COMPLETED, StepStatus.SKIPPED):
+            step.completed_at = datetime.utcnow()
+            # Auto-advance current_step_index if this was the current step
+            if agent.plan.current_step_index == step_index:
+                # Find next pending step
+                next_step = None
+                for s in agent.plan.steps:
+                    if s.index > step_index and s.status == StepStatus.PENDING:
+                        next_step = s
+                        break
+                agent.plan.current_step_index = next_step.index if next_step else None
+
+        # Update files and track work units
+        if files is not None:
+            step.files = files
+            # Register work units for files
+            for file_path in files:
+                self._add_work_unit(agent_id, file_path, step_index, "write")
+
+        return step
+
+    def add_step_log(
+        self,
+        agent_id: str,
+        step_index: int,
+        message: str,
+        level: str = "info",
+    ) -> Optional[StepLog]:
+        """Add a log entry to a step."""
+        agent = self._agents.get(agent_id)
+        if not agent or not agent.plan:
+            return None
+
+        # Find the step
+        step = None
+        for s in agent.plan.steps:
+            if s.index == step_index:
+                step = s
+                break
+
+        if not step:
+            return None
+
+        log = StepLog(message=message, level=level)
+        step.logs.append(log)
+        return log
+
+    # Work unit management
+
+    def _add_work_unit(
+        self,
+        agent_id: str,
+        path: str,
+        step_index: Optional[int],
+        operation: str,
+    ) -> WorkUnit:
+        """Internal: Add or update a work unit."""
+        # Normalize path
+        normalized_path = path.replace("\\", "/")
+
+        work_unit = WorkUnit(
+            path=normalized_path,
+            agent_id=agent_id,
+            step_index=step_index,
+            operation=operation,
+        )
+        self._work_units[normalized_path] = work_unit
+        return work_unit
+
+    def track_file_access(
+        self,
+        agent_id: str,
+        path: str,
+        operation: str,
+    ) -> WorkUnit:
+        """Track a file access from an agent."""
+        agent = self._agents.get(agent_id)
+        step_index = None
+        if agent and agent.plan:
+            step_index = agent.plan.current_step_index
+        return self._add_work_unit(agent_id, path, step_index, operation)
+
+    def remove_work_unit(self, path: str) -> bool:
+        """Remove a work unit by path."""
+        normalized_path = path.replace("\\", "/")
+        if normalized_path in self._work_units:
+            del self._work_units[normalized_path]
+            return True
+        return False
+
+    def list_work_units(self) -> list[WorkUnit]:
+        """List all active work units."""
+        return list(self._work_units.values())
+
+    def get_agent_work_units(self, agent_id: str) -> list[WorkUnit]:
+        """Get work units for a specific agent."""
+        return [wu for wu in self._work_units.values() if wu.agent_id == agent_id]
+
+    def clear_agent_work_units(self, agent_id: str) -> int:
+        """Clear all work units for an agent. Returns count removed."""
+        to_remove = [path for path, wu in self._work_units.items() if wu.agent_id == agent_id]
+        for path in to_remove:
+            del self._work_units[path]
+        return len(to_remove)
 
 
 # Global registry instance

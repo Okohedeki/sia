@@ -5,12 +5,37 @@ const API_URL = 'http://localhost:8000'
 
 type ConnectionStatus = 'connecting' | 'connected' | 'disconnected'
 
+interface StepLog {
+  id: string
+  message: string
+  level: string
+  timestamp: string
+}
+
+interface PlanStep {
+  id: string
+  index: number
+  description: string
+  status: 'pending' | 'in_progress' | 'completed' | 'skipped'
+  files: string[]
+  logs: StepLog[]
+  started_at: string | null
+  completed_at: string | null
+}
+
+interface Plan {
+  steps: PlanStep[]
+  current_step_index: number | null
+  created_at: string
+}
+
 interface ToolCall {
   id: string
   tool_name: string
   tool_input: Record<string, unknown>
   tool_output: string
   duration_ms: number
+  step_index: number | null
   timestamp: string
 }
 
@@ -23,15 +48,26 @@ interface Agent {
   state: 'pending' | 'running' | 'completed' | 'failed'
   response: string | null
   error: string | null
+  plan: Plan | null
   tool_calls: ToolCall[]
   created_at: string
   started_at: string | null
   completed_at: string | null
 }
 
+interface WorkUnit {
+  id: string
+  path: string
+  agent_id: string
+  step_index: number | null
+  operation: string
+  created_at: string
+}
+
 function App() {
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting')
   const [agents, setAgents] = useState<Agent[]>([])
+  const [workUnits, setWorkUnits] = useState<WorkUnit[]>([])
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
 
   const selectedAgent = agents.find(a => a.id === selectedAgentId)
@@ -65,12 +101,29 @@ function App() {
     }
   }, [])
 
-  // Poll agents every second for real-time updates
+  // Fetch work units
+  const fetchWorkUnits = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_URL}/api/work-units`)
+      if (response.ok) {
+        const data = await response.json()
+        setWorkUnits(data)
+      }
+    } catch {
+      // Ignore fetch errors
+    }
+  }, [])
+
+  // Poll agents and work units every second
   useEffect(() => {
     fetchAgents()
-    const interval = setInterval(fetchAgents, 1000)
+    fetchWorkUnits()
+    const interval = setInterval(() => {
+      fetchAgents()
+      fetchWorkUnits()
+    }, 1000)
     return () => clearInterval(interval)
-  }, [fetchAgents])
+  }, [fetchAgents, fetchWorkUnits])
 
   const getStateBadgeClass = (state: Agent['state']) => {
     switch (state) {
@@ -81,9 +134,37 @@ function App() {
     }
   }
 
+  const getStepStatusClass = (status: PlanStep['status']) => {
+    switch (status) {
+      case 'pending': return 'step-pending'
+      case 'in_progress': return 'step-in-progress'
+      case 'completed': return 'step-completed'
+      case 'skipped': return 'step-skipped'
+    }
+  }
+
+  const getLogLevelClass = (level: string) => {
+    switch (level) {
+      case 'error': return 'log-error'
+      case 'warning': return 'log-warning'
+      case 'debug': return 'log-debug'
+      default: return 'log-info'
+    }
+  }
+
   const formatTimestamp = (ts: string) => {
     const date = new Date(ts)
     return date.toLocaleTimeString()
+  }
+
+  const getFileName = (path: string) => {
+    const parts = path.replace(/\\/g, '/').split('/')
+    return parts[parts.length - 1]
+  }
+
+  const getAgentName = (agentId: string) => {
+    const agent = agents.find(a => a.id === agentId)
+    return agent?.name || agentId
   }
 
   return (
@@ -128,6 +209,18 @@ function App() {
                   <p className="agent-task-preview">
                     {agent.task.length > 50 ? agent.task.slice(0, 50) + '...' : agent.task}
                   </p>
+                  {agent.plan && (
+                    <div className="agent-plan-preview">
+                      <span className="plan-progress">
+                        {agent.plan.steps.filter(s => s.status === 'completed').length}/{agent.plan.steps.length} steps
+                      </span>
+                      {agent.plan.current_step_index && (
+                        <span className="current-step">
+                          Step {agent.plan.current_step_index}
+                        </span>
+                      )}
+                    </div>
+                  )}
                   {agent.tool_calls.length > 0 && (
                     <span className="tool-count">{agent.tool_calls.length} tool calls</span>
                   )}
@@ -193,6 +286,59 @@ sia start
                 </span>
               </div>
 
+              {/* Plan Section */}
+              {selectedAgent.plan && (
+                <div className="detail-section plan-section">
+                  <h3>Execution Plan</h3>
+                  <div className="plan-steps">
+                    {selectedAgent.plan.steps.map((step) => (
+                      <div
+                        key={step.id}
+                        className={`plan-step ${getStepStatusClass(step.status)} ${selectedAgent.plan?.current_step_index === step.index ? 'current' : ''}`}
+                      >
+                        <div className="step-header">
+                          <span className="step-index">{step.index}</span>
+                          <span className="step-description">{step.description}</span>
+                          <span className={`step-status-badge ${getStepStatusClass(step.status)}`}>
+                            {step.status.replace('_', ' ')}
+                          </span>
+                        </div>
+
+                        {step.files.length > 0 && (
+                          <div className="step-files">
+                            <span className="files-label">Files:</span>
+                            {step.files.map((file, i) => (
+                              <span key={i} className="file-tag" title={file}>
+                                {getFileName(file)}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
+                        {step.logs.length > 0 && (
+                          <div className="step-logs">
+                            {step.logs.map((log) => (
+                              <div key={log.id} className={`step-log ${getLogLevelClass(log.level)}`}>
+                                <span className="log-time">{formatTimestamp(log.timestamp)}</span>
+                                <span className="log-level">[{log.level}]</span>
+                                <span className="log-message">{log.message}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {step.status === 'in_progress' && (
+                          <div className="step-running-indicator">
+                            <span className="spinner small"></span>
+                            <span>In progress...</span>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {selectedAgent.tool_calls.length > 0 && (
                 <div className="detail-section">
                   <h3>Tool Executions</h3>
@@ -201,6 +347,9 @@ sia start
                       <div key={tc.id} className="tool-call-item">
                         <div className="tool-call-header">
                           <span className="tool-name">{tc.tool_name}</span>
+                          {tc.step_index && (
+                            <span className="tool-step">Step {tc.step_index}</span>
+                          )}
                           <span className="tool-duration">{tc.duration_ms}ms</span>
                         </div>
                         <div className="tool-call-body">
@@ -242,6 +391,48 @@ sia start
             </div>
           )}
         </main>
+
+        {/* Work Units Sidebar */}
+        <aside className="sidebar-right">
+          <div className="sidebar-header">
+            <h2>Work Units</h2>
+            <span className="agent-count">{workUnits.length}</span>
+          </div>
+          <div className="work-units-list">
+            {workUnits.length === 0 ? (
+              <div className="no-work-units">
+                <p>No active work units</p>
+                <p className="hint">Files being worked on will appear here</p>
+              </div>
+            ) : (
+              workUnits.map(wu => (
+                <div
+                  key={wu.id}
+                  className={`work-unit-item ${wu.agent_id === selectedAgentId ? 'highlighted' : ''}`}
+                  onClick={() => setSelectedAgentId(wu.agent_id)}
+                >
+                  <div className="work-unit-header">
+                    <span className="work-unit-file" title={wu.path}>
+                      {getFileName(wu.path)}
+                    </span>
+                    <span className={`work-unit-op op-${wu.operation}`}>
+                      {wu.operation}
+                    </span>
+                  </div>
+                  <div className="work-unit-details">
+                    <span className="work-unit-agent">{getAgentName(wu.agent_id)}</span>
+                    {wu.step_index && (
+                      <span className="work-unit-step">Step {wu.step_index}</span>
+                    )}
+                  </div>
+                  <div className="work-unit-path" title={wu.path}>
+                    {wu.path}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </aside>
       </div>
     </div>
   )
