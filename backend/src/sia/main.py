@@ -21,6 +21,28 @@ from .models import (
     StepLogResponse,
     WorkUnitResponse,
     AgentSource,
+    SpanResponse,
+    RunResponse,
+    RunWithSpansResponse,
+    TimelineResponse,
+    TimelineEvent,
+    PlanComparisonResponse,
+    PlanDivergence,
+    SpanKind,
+    SpanStatus,
+    AgentGraphNode,
+    AgentGraphEdge,
+    AgentGraphMetrics,
+    AgentGraphResponse,
+    GraphEdgeType,
+    AgentState,
+    WorkspaceNode,
+    WorkspaceEdge,
+    WorkspaceConflict,
+    WorkspaceMapMetrics,
+    WorkspaceMapResponse,
+    WorkspaceNodeType,
+    WorkspaceEdgeType,
 )
 from .registry import registry
 from pydantic import BaseModel
@@ -167,6 +189,13 @@ async def set_agent_plan(agent_id: str, request: SetPlanRequest):
             logs=[StepLogResponse(**log.model_dump()) for log in s.logs],
             started_at=s.started_at,
             completed_at=s.completed_at,
+            owner=s.owner,
+            resources=s.resources,
+            artifacts=s.artifacts,
+            reason=s.reason,
+            confidence=s.confidence,
+            blocked_by=s.blocked_by,
+            can_parallel=s.can_parallel,
         ) for s in plan.steps],
         current_step_index=plan.current_step_index,
         created_at=plan.created_at,
@@ -193,6 +222,13 @@ async def update_step_status(agent_id: str, step_index: int, request: UpdateStep
         logs=[StepLogResponse(**log.model_dump()) for log in step.logs],
         started_at=step.started_at,
         completed_at=step.completed_at,
+        owner=step.owner,
+        resources=step.resources,
+        artifacts=step.artifacts,
+        reason=step.reason,
+        confidence=step.confidence,
+        blocked_by=step.blocked_by,
+        can_parallel=step.can_parallel,
     )
 
 
@@ -374,6 +410,504 @@ async def remove_session(session_id: str):
         logger.info(f"[Session Removed] session={session_id[:8]}... agent={agent_id}")
         return {"status": "ok", "session_id": session_id}
     raise HTTPException(status_code=404, detail="Session not found")
+
+
+# =====================================
+# Tracing API - Runs and Spans
+# =====================================
+
+def _span_to_response(span, children: list = None) -> SpanResponse:
+    """Convert a Span model to SpanResponse."""
+    return SpanResponse(
+        id=span.id,
+        trace_id=span.trace_id,
+        parent_id=span.parent_id,
+        kind=span.kind,
+        name=span.name,
+        status=span.status,
+        start_time=span.start_time,
+        end_time=span.end_time,
+        duration_ms=span.duration_ms,
+        agent_id=span.agent_id,
+        step_index=span.step_index,
+        blocked_by_span_id=span.blocked_by_span_id,
+        blocked_by_resource=span.blocked_by_resource,
+        blocked_duration_ms=span.blocked_duration_ms,
+        attributes=span.attributes,
+        error_message=span.error_message,
+        file_path=span.file_path,
+        operation=span.operation,
+        children=children or [],
+    )
+
+
+def _run_to_response(run) -> RunResponse:
+    """Convert a Run model to RunResponse."""
+    return RunResponse(
+        id=run.id,
+        trace_id=run.trace_id,
+        name=run.name,
+        status=run.status,
+        start_time=run.start_time,
+        end_time=run.end_time,
+        duration_ms=run.duration_ms,
+        root_agent_id=run.root_agent_id,
+        agent_ids=run.agent_ids,
+        total_spans=run.total_spans,
+        completed_spans=run.completed_spans,
+        failed_spans=run.failed_spans,
+        blocked_spans=run.blocked_spans,
+        max_concurrency=run.max_concurrency,
+        files_touched=run.files_touched,
+        planned_steps=run.planned_steps,
+        executed_steps=run.executed_steps,
+    )
+
+
+def _build_span_tree(spans: list, parent_id: str = None) -> list[SpanResponse]:
+    """Build a tree structure from flat span list."""
+    children = []
+    for span in spans:
+        if span.parent_id == parent_id:
+            child_response = _span_to_response(
+                span,
+                children=_build_span_tree(spans, span.id)
+            )
+            children.append(child_response)
+    return children
+
+
+@app.get("/api/runs", response_model=list[RunResponse])
+async def list_runs():
+    """List all runs, newest first."""
+    runs = registry.list_runs()
+    return [_run_to_response(r) for r in runs]
+
+
+@app.get("/api/runs/{run_id}", response_model=RunWithSpansResponse)
+async def get_run(run_id: str):
+    """Get a run with all its spans."""
+    run = registry.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    spans = registry.get_spans_for_trace(run.trace_id)
+    flat_spans = [_span_to_response(s) for s in spans]
+
+    # Build tree structure
+    root_span = None
+    tree_spans = _build_span_tree(spans, None)
+    if tree_spans:
+        root_span = tree_spans[0]
+
+    return RunWithSpansResponse(
+        run=_run_to_response(run),
+        spans=flat_spans,
+        root_span=root_span,
+    )
+
+
+@app.get("/api/runs/{run_id}/timeline", response_model=TimelineResponse)
+async def get_run_timeline(run_id: str):
+    """Get timeline events for a run."""
+    run = registry.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    spans = registry.get_spans_for_trace(run.trace_id)
+    events = []
+
+    for span in spans:
+        # Start event
+        events.append(TimelineEvent(
+            timestamp=span.start_time,
+            event_type="span_start",
+            span_id=span.id,
+            agent_id=span.agent_id,
+            name=span.name,
+            status=span.status,
+            duration_ms=span.duration_ms,
+        ))
+        # End event
+        if span.end_time:
+            events.append(TimelineEvent(
+                timestamp=span.end_time,
+                event_type="span_end",
+                span_id=span.id,
+                agent_id=span.agent_id,
+                name=span.name,
+                status=span.status,
+                duration_ms=span.duration_ms,
+            ))
+        # Blocked event
+        if span.status == SpanStatus.BLOCKED:
+            events.append(TimelineEvent(
+                timestamp=span.start_time,
+                event_type="blocked",
+                span_id=span.id,
+                agent_id=span.agent_id,
+                name=f"Blocked: {span.blocked_by_resource or 'unknown'}",
+                status=span.status,
+                duration_ms=span.blocked_duration_ms,
+            ))
+        # Error event
+        if span.status == SpanStatus.FAILED:
+            events.append(TimelineEvent(
+                timestamp=span.end_time or span.start_time,
+                event_type="error",
+                span_id=span.id,
+                agent_id=span.agent_id,
+                name=span.error_message or "Error",
+                status=span.status,
+                duration_ms=span.duration_ms,
+            ))
+
+    # Sort by timestamp
+    events.sort(key=lambda e: e.timestamp)
+
+    # Get unique agent IDs
+    agent_ids = list(set(e.agent_id for e in events if e.agent_id))
+
+    return TimelineResponse(
+        start_time=run.start_time,
+        end_time=run.end_time,
+        events=events,
+        agents=agent_ids,
+    )
+
+
+@app.get("/api/runs/{run_id}/plan-comparison", response_model=PlanComparisonResponse)
+async def get_plan_comparison(run_id: str):
+    """Get plan vs execution comparison for a run."""
+    run = registry.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    # Get the root agent's plan
+    if not run.root_agent_id:
+        return PlanComparisonResponse(
+            planned_steps=[],
+            executed_steps=[],
+            divergences=[],
+            has_divergence=False,
+        )
+
+    agent = registry.get(run.root_agent_id)
+    if not agent or not agent.plan:
+        return PlanComparisonResponse(
+            planned_steps=[],
+            executed_steps=[],
+            divergences=[],
+            has_divergence=False,
+        )
+
+    planned = [s.description for s in agent.plan.steps]
+    executed = [s.description for s in agent.plan.steps if s.status in ("completed", "in_progress")]
+
+    # Calculate divergences
+    divergences = []
+    planned_set = set(planned)
+    executed_set = set(executed)
+
+    for i, step in enumerate(planned):
+        if step in executed_set:
+            exec_idx = executed.index(step) if step in executed else None
+            if exec_idx != i:
+                divergences.append(PlanDivergence(
+                    step_description=step,
+                    planned_index=i,
+                    executed_index=exec_idx,
+                    status="reordered"
+                ))
+            else:
+                divergences.append(PlanDivergence(
+                    step_description=step,
+                    planned_index=i,
+                    executed_index=exec_idx,
+                    status="executed"
+                ))
+        else:
+            divergences.append(PlanDivergence(
+                step_description=step,
+                planned_index=i,
+                executed_index=None,
+                status="skipped"
+            ))
+
+    # Check for inserted steps
+    for i, step in enumerate(executed):
+        if step not in planned_set:
+            divergences.append(PlanDivergence(
+                step_description=step,
+                planned_index=None,
+                executed_index=i,
+                status="inserted"
+            ))
+
+    has_divergence = any(d.status != "executed" for d in divergences)
+
+    return PlanComparisonResponse(
+        planned_steps=planned,
+        executed_steps=executed,
+        divergences=divergences,
+        has_divergence=has_divergence,
+    )
+
+
+@app.get("/api/spans/{span_id}", response_model=SpanResponse)
+async def get_span(span_id: str):
+    """Get a span by ID."""
+    span = registry.get_span(span_id)
+    if not span:
+        raise HTTPException(status_code=404, detail="Span not found")
+    return _span_to_response(span)
+
+
+@app.get("/api/runs/{run_id}/agent-graph", response_model=AgentGraphResponse)
+async def get_agent_graph(run_id: str):
+    """Get agent interaction graph for a run."""
+    run = registry.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    nodes = []
+    edges = []
+    depth_map: dict[str, int] = {}  # agent_id -> depth
+    children_count: dict[str, int] = {}  # agent_id -> child count
+    blocking_agents: set[str] = set()
+
+    # Build nodes from agents in this run
+    for agent_id in run.agent_ids:
+        agent = registry.get(agent_id)
+        if not agent:
+            continue
+
+        # Calculate depth
+        depth = 0
+        parent_id = agent.parent_agent_id
+        while parent_id:
+            depth += 1
+            parent = registry.get(parent_id)
+            if parent:
+                parent_id = parent.parent_agent_id
+            else:
+                break
+        depth_map[agent_id] = depth
+
+        # Track children count for parent
+        if agent.parent_agent_id:
+            children_count[agent.parent_agent_id] = children_count.get(agent.parent_agent_id, 0) + 1
+
+        # Calculate duration
+        duration_ms = None
+        if agent.started_at and agent.completed_at:
+            duration_ms = int((agent.completed_at - agent.started_at).total_seconds() * 1000)
+
+        node = AgentGraphNode(
+            id=agent.id,
+            name=agent.name or f"Agent {agent.id}",
+            state=agent.state,
+            source=agent.source,
+            is_root=(agent.id == run.root_agent_id),
+            depth=depth,
+            tool_calls_count=len(agent.tool_calls),
+            duration_ms=duration_ms,
+            started_at=agent.started_at,
+            completed_at=agent.completed_at,
+            error_message=agent.error,
+        )
+        nodes.append(node)
+
+        # Create spawn edge from parent to this agent
+        if agent.parent_agent_id and agent.parent_agent_id in run.agent_ids:
+            edge = AgentGraphEdge(
+                source_id=agent.parent_agent_id,
+                target_id=agent.id,
+                edge_type=GraphEdgeType.SPAWN,
+                timestamp=agent.created_at,
+                label="spawned",
+            )
+            edges.append(edge)
+
+    # Check for blocking relationships from spans
+    spans = registry.get_spans_for_trace(run.trace_id)
+    for span in spans:
+        if span.blocked_by_span_id:
+            blocker_span = registry.get_span(span.blocked_by_span_id)
+            if blocker_span and blocker_span.agent_id and span.agent_id:
+                # Add blocking edge
+                edge = AgentGraphEdge(
+                    source_id=blocker_span.agent_id,
+                    target_id=span.agent_id,
+                    edge_type=GraphEdgeType.BLOCKING,
+                    timestamp=span.start_time,
+                    label=span.blocked_by_resource or "blocking",
+                )
+                edges.append(edge)
+                blocking_agents.add(blocker_span.agent_id)
+
+    # Calculate metrics
+    max_depth = max(depth_map.values()) if depth_map else 0
+    fan_out = max(children_count.values()) if children_count else 0
+    failed_agents = sum(1 for n in nodes if n.state == AgentState.FAILED)
+    blocked_agents = sum(1 for s in spans if s.status == SpanStatus.BLOCKED and s.agent_id)
+
+    metrics = AgentGraphMetrics(
+        total_agents=len(nodes),
+        max_depth=max_depth,
+        fan_out=fan_out,
+        failed_agents=failed_agents,
+        blocked_agents=blocked_agents,
+        bottleneck_agents=list(blocking_agents),
+    )
+
+    return AgentGraphResponse(
+        nodes=nodes,
+        edges=edges,
+        metrics=metrics,
+        root_agent_id=run.root_agent_id,
+    )
+
+
+@app.get("/api/runs/{run_id}/workspace-map", response_model=WorkspaceMapResponse)
+async def get_workspace_map(run_id: str):
+    """Get workspace impact map for a run."""
+    run = registry.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    nodes: list[WorkspaceNode] = []
+    edges: list[WorkspaceEdge] = []
+    conflicts: list[WorkspaceConflict] = []
+
+    # Track file -> agents mapping
+    file_agents: dict[str, set[str]] = {}  # path -> set of agent_ids
+    file_operations: dict[str, set[str]] = {}  # path -> set of operations
+    file_node_ids: dict[str, str] = {}  # path -> node_id
+    agent_file_count: dict[str, int] = {}  # agent_id -> file count
+
+    # Get spans with file operations
+    spans = registry.get_spans_for_trace(run.trace_id)
+
+    for span in spans:
+        if span.file_path and span.agent_id:
+            path = span.file_path.replace("\\", "/")
+            operation = span.operation or "modify"
+
+            # Track agent-file relationships
+            if path not in file_agents:
+                file_agents[path] = set()
+                file_operations[path] = set()
+            file_agents[path].add(span.agent_id)
+            file_operations[path].add(operation)
+
+            # Track agent activity
+            agent_file_count[span.agent_id] = agent_file_count.get(span.agent_id, 0) + 1
+
+    # Also check work units
+    for agent_id in run.agent_ids:
+        work_units = registry.get_agent_work_units(agent_id)
+        for wu in work_units:
+            path = wu.path.replace("\\", "/")
+            if path not in file_agents:
+                file_agents[path] = set()
+                file_operations[path] = set()
+            file_agents[path].add(agent_id)
+            file_operations[path].add(wu.operation)
+            agent_file_count[agent_id] = agent_file_count.get(agent_id, 0) + 1
+
+    # Create file nodes
+    for path, agent_ids in file_agents.items():
+        file_name = path.split("/")[-1] if "/" in path else path
+        node_id = f"file-{hash(path) % 10000:04d}"
+        file_node_ids[path] = node_id
+
+        operations = file_operations.get(path, set())
+        read_count = 1 if "read" in operations else 0
+        write_count = 1 if "write" in operations or "modify" in operations else 0
+
+        node = WorkspaceNode(
+            id=node_id,
+            node_type=WorkspaceNodeType.FILE,
+            name=file_name,
+            path=path,
+            read_count=read_count,
+            write_count=write_count,
+            touched_by=list(agent_ids),
+        )
+        nodes.append(node)
+
+        # Create conflict if multiple agents touched this file
+        if len(agent_ids) > 1:
+            conflict = WorkspaceConflict(
+                file_path=path,
+                file_id=node_id,
+                agents=list(agent_ids),
+                operations=list(operations),
+            )
+            conflicts.append(conflict)
+
+    # Create agent nodes and edges
+    for agent_id in run.agent_ids:
+        agent = registry.get(agent_id)
+        if not agent:
+            continue
+
+        agent_node = WorkspaceNode(
+            id=f"agent-{agent_id}",
+            node_type=WorkspaceNodeType.AGENT,
+            name=agent.name or f"Agent {agent_id}",
+            agent_id=agent_id,
+        )
+        nodes.append(agent_node)
+
+        # Create edges for this agent's file operations
+        for span in spans:
+            if span.agent_id == agent_id and span.file_path:
+                path = span.file_path.replace("\\", "/")
+                if path in file_node_ids:
+                    operation = span.operation or "modify"
+                    edge_type = WorkspaceEdgeType.READ if operation == "read" else WorkspaceEdgeType.WRITE
+
+                    edge = WorkspaceEdge(
+                        source_id=f"agent-{agent_id}",
+                        target_id=file_node_ids[path],
+                        edge_type=edge_type,
+                        timestamp=span.start_time,
+                        step_index=span.step_index,
+                    )
+                    edges.append(edge)
+
+    # Calculate metrics
+    most_touched_file = None
+    max_touches = 0
+    for path, agent_ids in file_agents.items():
+        if len(agent_ids) > max_touches:
+            max_touches = len(agent_ids)
+            most_touched_file = path
+
+    most_active_agent = None
+    max_files = 0
+    for agent_id, count in agent_file_count.items():
+        if count > max_files:
+            max_files = count
+            agent = registry.get(agent_id)
+            most_active_agent = agent.name if agent and agent.name else agent_id
+
+    metrics = WorkspaceMapMetrics(
+        total_files=len(file_agents),
+        total_agents=len(run.agent_ids),
+        files_with_conflicts=len(conflicts),
+        most_touched_file=most_touched_file,
+        most_active_agent=most_active_agent,
+    )
+
+    return WorkspaceMapResponse(
+        nodes=nodes,
+        edges=edges,
+        conflicts=conflicts,
+        metrics=metrics,
+    )
 
 
 # Serve frontend static files
